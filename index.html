@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>小鬼跳跃 (Ghost Jump)</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.7.77/Tone.js"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
@@ -31,6 +32,13 @@
             <span class="ml-4">最高: <span id="high-score">0</span></span>
         </div>
         
+        <!-- 静音按钮 -->
+        <div class="absolute top-4 right-4 z-20">
+             <button id="mute-button" class="w-10 h-10 md:w-12 md:h-12 bg-gray-700 rounded-full flex items-center justify-center text-white text-xl shadow-lg btn-focus-visible">
+                🎵
+            </button>
+        </div>
+
         <!-- 游戏画布 -->
         <canvas id="gameCanvas" class="w-full h-auto bg-gray-800 rounded-lg shadow-2xl"></canvas>
 
@@ -69,6 +77,8 @@
         const startHighScoreEl = document.getElementById('start-high-score');
         const startButton = document.getElementById('start-button');
 
+        const muteButton = document.getElementById('mute-button');
+
         const gameOverMenu = document.getElementById('game-over-menu');
         const finalScoreEl = document.getElementById('final-score');
         const endHighScoreEl = document.getElementById('end-high-score');
@@ -81,9 +91,42 @@
         const HIGH_SCORE_KEY = 'ghostJumpHighScore';
 
         let canvasWidth, canvasHeight;
-        let player, obstacles, score, highScore, gameSpeed, frameCount;
+        let player, obstacles, particles, score, highScore, gameSpeed, frameCount;
         let gameState = 'pre-game'; // 'pre-game', 'playing', 'game-over'
         let animationFrameId;
+
+        // --- 音频变量 ---
+        let music;
+        let audioStarted = false;
+        let isMuted = false;
+
+        // --- 粒子效果对象 ---
+        class Particle {
+            constructor(x, y) {
+                this.x = x;
+                this.y = y;
+                this.size = Math.random() * 5 + 3;
+                this.speedY = (Math.random() * 2) - 1;
+                this.speedX = (Math.random() * 2) - 1;
+                this.alpha = 1;
+            }
+        
+            update() {
+                this.x += this.speedX;
+                this.y += this.speedY;
+                this.alpha -= 0.05;
+            }
+        
+            draw() {
+                ctx.save();
+                ctx.globalAlpha = this.alpha;
+                ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.restore();
+            }
+        }
 
         // --- 玩家 (小鬼) 对象 ---
         class Player {
@@ -139,6 +182,7 @@
                     this.velocityY = JUMP_STRENGTH;
                     this.isGrounded = false;
                     this.jumpCount++;
+                    spawnJumpParticles(); // 生成跳跃粒子
                 }
             }
         }
@@ -162,6 +206,39 @@
 
             update() {
                 this.x -= gameSpeed;
+            }
+        }
+
+        // --- 空中障碍物对象 ---
+        class FloatingObstacle {
+            constructor(x, y, radius) {
+                this.x = x;
+                this.y = y;
+                this.radius = radius;
+                this.width = radius * 2; // 用于碰撞检测
+                this.height = radius * 2; // 用于碰撞检测
+                this.angle = 0;
+            }
+
+            draw() {
+                ctx.fillStyle = '#fbd38d'; // orange-200
+                ctx.beginPath();
+                for (let i = 0; i < 8; i++) {
+                    const angle = this.angle + (i * Math.PI / 4);
+                    const x1 = this.x + Math.cos(angle) * this.radius;
+                    const y1 = this.y + Math.sin(angle) * this.radius;
+                    const x2 = this.x + Math.cos(angle + Math.PI / 8) * this.radius * 0.6;
+                    const y2 = this.y + Math.sin(angle + Math.PI / 8) * this.radius * 0.6;
+                    ctx.lineTo(x1, y1);
+                    ctx.lineTo(x2, y2);
+                }
+                ctx.closePath();
+                ctx.fill();
+            }
+
+            update() {
+                this.x -= gameSpeed;
+                this.angle += 0.05;
             }
         }
         
@@ -188,6 +265,7 @@
             player = new Player(canvasWidth / 6, canvasHeight - playerHeight - 20, playerWidth, playerHeight);
             
             obstacles = [];
+            particles = [];
             score = 0;
             highScore = loadHighScore();
             gameSpeed = canvasWidth / 150;
@@ -214,6 +292,9 @@
             // 更新和绘制障碍物
             handleObstacles();
 
+            // 更新和绘制粒子效果
+            handleParticles();
+
             // 碰撞检测
             checkCollisions();
 
@@ -236,14 +317,38 @@
             ctx.fillRect(0, canvas.height - 20, canvas.width, 20);
         }
 
+        function handleParticles() {
+            for (let i = particles.length - 1; i >= 0; i--) {
+                particles[i].update();
+                particles[i].draw();
+                if (particles[i].alpha <= 0) {
+                    particles.splice(i, 1);
+                }
+            }
+        }
+
+        function spawnJumpParticles() {
+            const particleCount = 5;
+            for (let i = 0; i < particleCount; i++) {
+                particles.push(new Particle(player.x + player.width / 2, player.y + player.height));
+            }
+        }
+
         function handleObstacles() {
             // 每隔一段时间生成新障碍物
             const spawnInterval = Math.max(80 - gameSpeed * 5, 50);
             if (frameCount % Math.round(spawnInterval) === 0) {
-                if (Math.random() > 0.3) { // 增加障碍物出现的随机性
-                    const obsHeight = Math.random() * (canvasHeight / 8) + canvasHeight / 12; // 降低柱子高度
-                    const obsWidth = obsHeight / 2;
-                    obstacles.push(new Obstacle(canvasWidth, canvasHeight - obsHeight - 20, obsWidth, obsHeight));
+                 if (Math.random() > 0.3) {
+                    // 随机生成地面或空中障碍物
+                    if (Math.random() > 0.4) {
+                        const obsHeight = Math.random() * (canvasHeight / 8) + canvasHeight / 12;
+                        const obsWidth = obsHeight / 2;
+                        obstacles.push(new Obstacle(canvasWidth, canvasHeight - obsHeight - 20, obsWidth, obsHeight));
+                    } else {
+                        const radius = Math.random() * 15 + 15;
+                        const yPos = canvasHeight - (player.height * 2.5) - Math.random() * (canvasHeight / 4);
+                        obstacles.push(new FloatingObstacle(canvasWidth, yPos, radius));
+                    }
                 }
             }
 
@@ -261,8 +366,14 @@
 
         function checkCollisions() {
             for (const obstacle of obstacles) {
+                // 根据障碍物类型调整碰撞盒
+                const obstacleBox = {
+                    x: obstacle.constructor.name === 'FloatingObstacle' ? obstacle.x - obstacle.radius : obstacle.x,
+                    y: obstacle.constructor.name === 'FloatingObstacle' ? obstacle.y - obstacle.radius : obstacle.y,
+                    width: obstacle.width,
+                    height: obstacle.height
+                };
                 const playerBox = { x: player.x, y: player.y, width: player.width, height: player.height };
-                const obstacleBox = { x: obstacle.x, y: obstacle.y, width: obstacle.width, height: obstacle.height };
                 
                 // AABB 碰撞检测
                 if (playerBox.x < obstacleBox.x + obstacleBox.width &&
@@ -275,7 +386,35 @@
             }
         }
 
-        function startGame() {
+        function createMusic() {
+            // 创建一个合成器
+            const synth = new Tone.FMSynth({
+                modulationIndex: 10,
+                envelope: { attack: 0.01, decay: 0.2, sustain: 0.1, release: 0.8 },
+                harmonicity: 3.01
+            }).toDestination();
+
+            // 创建一个循环播放的音序
+            music = new Tone.Sequence((time, note) => {
+                synth.triggerAttackRelease(note, '8n', time);
+            }, ['C3', 'Eb3', 'G3', 'Eb3', 'C3', null, 'G2'], '4n').start(0);
+            
+            Tone.Transport.bpm.value = 100;
+        }
+
+        async function startGame() {
+            // 首次用户交互时启动音频上下文
+            if (!audioStarted) {
+                await Tone.start();
+                createMusic();
+                audioStarted = true;
+                console.log('Audio context started');
+            }
+
+            if (!isMuted) {
+                Tone.Transport.start();
+            }
+
             init();
             gameState = 'playing';
             startMenu.classList.add('hidden');
@@ -289,6 +428,10 @@
             gameState = 'game-over';
             cancelAnimationFrame(animationFrameId);
             
+            if (audioStarted) {
+                Tone.Transport.stop();
+            }
+
             scoreContainer.classList.add('hidden');
             gameOverMenu.classList.remove('hidden');
             gameOverMenu.classList.add('flex');
@@ -349,6 +492,12 @@
         startButton.addEventListener('click', startGame);
         restartButton.addEventListener('click', startGame);
         
+        muteButton.addEventListener('click', () => {
+            isMuted = !isMuted;
+            Tone.Destination.mute = isMuted;
+            muteButton.textContent = isMuted ? '🔇' : '🎵';
+        });
+
         window.addEventListener('resize', init);
         
         // --- 初始加载 ---
@@ -359,4 +508,6 @@
     </script>
 </body>
 </html>
+
+
 
